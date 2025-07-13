@@ -6,22 +6,24 @@ import pandas as pd
 import numpy as np
 from PIL import Image
 import os
-from tensorflow.keras.models import load_model
-from tensorflow.keras.applications.mobilenet_v3 import preprocess_input
-import cv2
+import requests
 from ultralytics import YOLO
 from io import BytesIO
 import altair as alt
 import random
+import cv2
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+# ========= SETUP API URL =========
+API_URL = "https://model-meat-mind-ai-production.up.railway.app"
 
-# ============ DATABASE & AUTH ============
+# ========= DATABASE & AUTH =========
+
+DATA_DIR = "data"
+MODEL_DIR = "models"
 
 def get_conn():
     db_path = os.path.join(DATA_DIR, "calorie_tracker.db")
     return sqlite3.connect(db_path, check_same_thread=False)
-
 
 def create_tables():
     conn = get_conn()
@@ -219,66 +221,7 @@ def calculate_deficit_limit(tdee, goal):
     else:
         return tdee
 
-# ============ FOOD CLASS NAMES & MODELS ============
-
-@st.cache_resource
-def load_food101_class_names():
-    return [
-    "Apple pie", "Baby back ribs", "Baklava", "Beef carpaccio", "Beef tartare",
-    "Beet salad", "Beignets", "Bibimbap", "Bread pudding", "Breakfast burrito",
-    "Bruschetta", "Caesar salad", "Cannoli", "Caprese salad", "Carrot cake",
-    "Ceviche", "Cheesecake", "Cheese plate", "Chicken curry", "Chicken quesadilla",
-    "Chicken wings", "Chocolate cake", "Chocolate mousse", "Churros", "Clam chowder",
-    "Club sandwich", "Crab cakes", "Creme brulee", "Croque madame", "Cup cakes",
-    "Deviled eggs", "Donuts", "Dumplings", "Edamame", "Eggs benedict",
-    "Escargots", "Falafel", "Filet mignon", "Fish and chips", "Foie gras",
-    "French fries", "French onion soup", "French toast", "Fried calamari", "Fried rice",
-    "Frozen yogurt", "Garlic bread", "Gnocchi", "Greek salad", "Grilled cheese sandwich",
-    "Grilled salmon", "Guacamole", "Gyoza", "Hamburger", "Hot and sour soup",
-    "Hot dog", "Huevos rancheros", "Hummus", "Ice cream", "Lasagna",
-    "Lobster bisque", "Lobster roll sandwich", "Macaroni and cheese", "Macarons", "Miso soup",
-    "Mussels", "Nachos", "Omelette", "Onion rings", "Oysters",
-    "Pad thai", "Paella", "Pancakes", "Panna cotta", "Peking duck",
-    "Pho", "Pizza", "Pork chop", "Poutine", "Prime rib",
-    "Pulled pork sandwich", "Ramen", "Ravioli", "Red velvet cake", "Risotto",
-    "Samosa", "Sashimi", "Scallops", "Seaweed salad", "Shrimp and grits",
-    "Spaghetti bolognese", "Spaghetti carbonara", "Spring rolls", "Steak", "Strawberry shortcake",
-    "Sushi", "Tacos", "Takoyaki", "Tiramisu", "Tuna tartare",
-    "Waffles"
-    ]
-
-@st.cache_resource
-def load_indonesian_food_class_names():
-    return [
-        "Ayam bakar", "Ayam goreng", "Bakso", "Bakwan", "Batagor", "Bihun", "Capcay", "Gado-gado",
-        "Ikan goreng", "Kerupuk", "Martabak telor", "Mie", "Nasi goreng", "Nasi putih", "Nugget",
-        "Opor ayam", "Pempek", "Rendang", "Roti", "Soto", "Steak", "Tahu", "Telur", "Tempe",
-        "Terong balado", "Tumis kangkung", "Udang", "Sate", "Sosis"
-    ]
-
-@st.cache_resource
-def load_fruit_class_names():
-    return [
-        "Apple", "Apricot", "Avocado", "Banana", "Black Berry", "Blueberry", "Cherry", "Coconut",
-        "Cranberry", "Dragonfruit", "Durian", "Grape", "Grapefruit", "Guava", "Jackfruit", "Kiwi",
-        "Lemon", "Lime", "Lychee", "Mango", "Mangosteen", "Melon Pear", "Olive", "Orange", "Papaya",
-        "Passion Fruit", "Raspberry", "Salak", "Sapodilla", "Strawberry", "Tomato", "Watermelon"
-    ]
-
-def load_combined_class_names():
-    return load_food101_class_names() + load_indonesian_food_class_names()
-
-@st.cache_resource
-def load_trained_model():
-    return load_model(os.path.join(MODEL_DIR, 'mobilenetv3_food41.keras'), compile=False)
-
-@st.cache_resource
-def load_fruit_model():
-    return load_model(os.path.join(MODEL_DIR, 'final_fruit_mobilenetv3.keras'), compile=False)
-
-@st.cache_resource
-def load_yolo_model():
-    return YOLO(os.path.join(MODEL_DIR, 'indo_yolo.pt'))
+# ========= FOOD CLASS NAMES & NUTRITION =========
 
 @st.cache_data
 def load_nutrition_data():
@@ -289,14 +232,37 @@ def load_nutrition_data():
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     return df
 
-def predict_image(uploaded_file, model):
-    img = Image.open(uploaded_file).convert('RGB')
-    img = img.resize((224, 224))
-    img_array = np.array(img).astype("float32")
-    img_array = preprocess_input(img_array)
-    img_array = np.expand_dims(img_array, axis=0)
-    prediction = model.predict(img_array)
-    return np.argmax(prediction), np.max(prediction), img
+def get_nutrition_info(food_class, nutritional_data):
+    row = nutritional_data[nutritional_data['food_name'].str.lower() == str(food_class).lower()]
+    return row.iloc[0] if not row.empty else None
+
+# ========= PREDICT API FASTAPI =========
+
+def predict_food_api(image_bytes):
+    files = {'file': image_bytes}
+    try:
+        res = requests.post(API_URL + "/predict/food", files=files, timeout=30)
+        if res.status_code == 200:
+            result = res.json()
+            return result["class"], result["confidence"]
+        else:
+            return None, 0
+    except Exception as e:
+        print("Error Food API:", e)
+        return None, 0
+
+def predict_fruit_api(image_bytes):
+    files = {'file': image_bytes}
+    try:
+        res = requests.post(API_URL + "/predict/fruit", files=files, timeout=30)
+        if res.status_code == 200:
+            result = res.json()
+            return result["class"], result["confidence"]
+        else:
+            return None, 0
+    except Exception as e:
+        print("Error Fruit API:", e)
+        return None, 0
 
 def predict_yolo(image_bytes, yolo_model):
     img_array = np.asarray(bytearray(image_bytes), dtype=np.uint8)
@@ -304,11 +270,7 @@ def predict_yolo(image_bytes, yolo_model):
     results = yolo_model(img)
     return results, img
 
-def get_nutrition_info(food_class, nutritional_data):
-    row = nutritional_data[nutritional_data['food_name'].str.lower() == food_class.lower()]
-    return row.iloc[0] if not row.empty else None
-
-# ============ STREAMLIT MAIN PAGE ============
+# ========= STREAMLIT MAIN PAGE =========
 
 st.set_page_config(page_title="MealMind AI", page_icon="🧠🍽️", layout="centered")
 st.title('🧠🍽️ MealMind AI')
@@ -434,12 +396,11 @@ with st.expander("🍽️ Quick Food Logging (No Image Scan)"):
             st.warning("Food not found in the database!")
 
 # ========== AI FOOD SCAN ==========
+@st.cache_resource
+def load_yolo_model():
+    return YOLO(os.path.join(MODEL_DIR, 'indo_yolo.pt'))
 
-model = load_trained_model()
-fruit_model = load_fruit_model()
 yolo_model = load_yolo_model()
-class_names = load_combined_class_names()
-fruit_class_names = load_fruit_class_names()
 
 input_method = st.radio("📸 Choose image input method:", ["📁 Upload File", "📷 Use Camera"])
 image_data = None
@@ -455,6 +416,7 @@ elif input_method == "📷 Use Camera":
 if image_data and profile:
     st.markdown("### 🔍 Scanning your food image...")
     image_bytes = image_data.read()
+    nutritional_data = load_nutrition_data()
     results, img_cv = predict_yolo(image_bytes, yolo_model)
     result = results[0]
     boxes = result.boxes
@@ -485,30 +447,19 @@ if image_data and profile:
             else:
                 st.warning(f"Nutritional info not found for {food_class}")
     else:
-        st.markdown("🔁 **Single food detected. Scanning with both models...**")
-        # === Scan with Main Food Model ===
-        image_data.seek(0)
-        pred_idx, conf_food, image = predict_image(BytesIO(image_bytes), model)
-        food_pred = class_names[pred_idx]
-
-        # === Scan with Fruit Model ===
-        image_data.seek(0)
-        pred_idx_fruit, conf_fruit, image_fruit = predict_image(BytesIO(image_bytes), fruit_model)
-        fruit_pred = fruit_class_names[pred_idx_fruit]
-
-        # === Choose the model with highest confidence ===
+        st.markdown("🔁 **Single food detected. Predicting with API...**")
+        food_pred, conf_food = predict_food_api(image_bytes)
+        fruit_pred, conf_fruit = predict_fruit_api(image_bytes)
         if conf_fruit > conf_food and conf_fruit > 0.5:
             st.info("🍏 The fruit model is more confident. Using fruit model prediction.")
             final_class = fruit_pred
             final_conf = conf_fruit
-            final_image = image_fruit
         else:
             final_class = food_pred
             final_conf = conf_food
-            final_image = image
 
         nutrition = get_nutrition_info(final_class, nutritional_data)
-        st.image(final_image, caption='Your Food Image', use_container_width=True)
+        st.image(Image.open(BytesIO(image_bytes)), caption='Your Food Image', use_container_width=True)
         st.markdown(f"### 🧠 Predicted Food: *{final_class}*")
         st.markdown(f"✅ Confidence: *{final_conf*100:.2f}%*")
 

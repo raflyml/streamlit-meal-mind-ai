@@ -1,8 +1,8 @@
 streamlit
 pandas
 numpy
+requests
 pillow
 opencv-python
-tensorflow
 ultralytics
 altair
