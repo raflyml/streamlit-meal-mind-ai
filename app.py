@@ -7,19 +7,14 @@ import numpy as np
 from PIL import Image
 import os
 import requests
-from ultralytics import YOLO
 from io import BytesIO
 import altair as alt
 import random
-import cv2
 
-# ========= SETUP API URL =========
-API_URL = "https://model-meat-mind-ai-production.up.railway.app"
-
-# ========= DATABASE & AUTH =========
-
+API_URL = "https://model-keras-meal-mind-ai-production.up.railway.app/"
 DATA_DIR = "data"
-MODEL_DIR = "models"
+
+# ======================= DATABASE & AUTH =======================
 
 def get_conn():
     db_path = os.path.join(DATA_DIR, "calorie_tracker.db")
@@ -221,8 +216,7 @@ def calculate_deficit_limit(tdee, goal):
     else:
         return tdee
 
-# ========= FOOD CLASS NAMES & NUTRITION =========
-
+# ========== NUTRITION DATA ==========
 @st.cache_data
 def load_nutrition_data():
     df = pd.read_csv(os.path.join(DATA_DIR, 'nutrition_data.csv'))
@@ -236,8 +230,7 @@ def get_nutrition_info(food_class, nutritional_data):
     row = nutritional_data[nutritional_data['food_name'].str.lower() == str(food_class).lower()]
     return row.iloc[0] if not row.empty else None
 
-# ========= PREDICT API FASTAPI =========
-
+# ========= API FASTAPI =========
 def predict_food_api(image_bytes):
     files = {'file': image_bytes}
     try:
@@ -264,14 +257,20 @@ def predict_fruit_api(image_bytes):
         print("Error Fruit API:", e)
         return None, 0
 
-def predict_yolo(image_bytes, yolo_model):
-    img_array = np.asarray(bytearray(image_bytes), dtype=np.uint8)
-    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    results = yolo_model(img)
-    return results, img
+def predict_yolo_api(image_bytes):
+    files = {'file': image_bytes}
+    try:
+        res = requests.post(API_URL + "/predict/yolo", files=files, timeout=60)
+        if res.status_code == 200:
+            result = res.json()
+            return result["results"]
+        else:
+            return []
+    except Exception as e:
+        print("Error YOLO API:", e)
+        return []
 
-# ========= STREAMLIT MAIN PAGE =========
-
+# ======================= STREAMLIT MAIN PAGE =======================
 st.set_page_config(page_title="MealMind AI", page_icon="🧠🍽️", layout="centered")
 st.title('🧠🍽️ MealMind AI')
 st.markdown("""
@@ -396,12 +395,6 @@ with st.expander("🍽️ Quick Food Logging (No Image Scan)"):
             st.warning("Food not found in the database!")
 
 # ========== AI FOOD SCAN ==========
-@st.cache_resource
-def load_yolo_model():
-    return YOLO(os.path.join(MODEL_DIR, 'indo_yolo.pt'))
-
-yolo_model = load_yolo_model()
-
 input_method = st.radio("📸 Choose image input method:", ["📁 Upload File", "📷 Use Camera"])
 image_data = None
 if input_method == "📁 Upload File":
@@ -417,23 +410,20 @@ if image_data and profile:
     st.markdown("### 🔍 Scanning your food image...")
     image_bytes = image_data.read()
     nutritional_data = load_nutrition_data()
-    results, img_cv = predict_yolo(image_bytes, yolo_model)
-    result = results[0]
-    boxes = result.boxes
-
+    yolo_results = predict_yolo_api(image_bytes)
     total_calories = 0
     food_logged = []
 
-    if len(boxes) > 1:
+    if len(yolo_results) > 1:
         st.markdown("🔁 **Multiple foods detected. Using AI detection.**")
-        st.image(img_cv, caption='Detected Multiple Foods', use_container_width=True)
+        st.image(Image.open(BytesIO(image_bytes)), caption='Detected Multiple Foods', use_container_width=True)
         st.markdown("### 🍽️ Detected Foods:")
-        for box in boxes:
-            class_id = int(box.cls[0])
-            food_class = result.names[class_id]
+        for item in yolo_results:
+            food_class = item["class"]
+            conf = item["confidence"]
             nutrition = get_nutrition_info(food_class, nutritional_data)
             if nutrition is not None:
-                st.markdown(f"- **{food_class}**")
+                st.markdown(f"- **{food_class}** (Conf: {conf*100:.1f}%)")
                 st.markdown(f"  - ⚖️ Weight: {nutrition['weight']} g")
                 st.markdown(f"  - 🍔 Calories: {nutrition['calories']} kcal")
                 st.markdown(f"  - 🍗 Protein: {nutrition['protein']} g")
@@ -462,7 +452,6 @@ if image_data and profile:
         st.image(Image.open(BytesIO(image_bytes)), caption='Your Food Image', use_container_width=True)
         st.markdown(f"### 🧠 Predicted Food: *{final_class}*")
         st.markdown(f"✅ Confidence: *{final_conf*100:.2f}%*")
-
         if nutrition is not None:
             st.markdown("### 🍴 Nutritional Information:")
             st.markdown(f"- ⚖️ Weight: {nutrition['weight']} g")
