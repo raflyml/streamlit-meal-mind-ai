@@ -1,8 +1,7 @@
-streamlit
-pandas
-numpy
-requests
-pillow
-opencv-python
-ultralytics
-altair
+streamlit>=1.25
+pandas>=2.0.0
+numpy>=1.23
+altair>=5.0
+pillow>=9.5
+requests>=2.31
+sqlite3
