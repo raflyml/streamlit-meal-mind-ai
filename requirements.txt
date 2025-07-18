@@ -4,4 +4,3 @@ numpy>=1.23
 altair>=5.0
 pillow>=9.5
 requests>=2.31
-sqlite3
