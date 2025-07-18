@@ -11,11 +11,69 @@ from io import BytesIO
 import altair as alt
 import random
 
-API_URL = "https://model-keras-meal-mind-ai-production.up.railway.app/"
+API_URL = "https://raflyml-model-meal-mind-ai.hf.space"
 DATA_DIR = "data"
 
-# ======================= DATABASE & AUTH =======================
+# ============ STRINGS (ENGLISH ONLY, FRIENDLY) ============
+L = {
+    "welcome": "👋 Welcome to MealMind AI! Your friendly smart buddy for a healthier you. Track meals, water, and progress—easily & enjoyably!",
+    "login": "Login",
+    "register": "Sign Up",
+    "username": "Username",
+    "password": "Password",
+    "login_btn": "Log In",
+    "login_success": "Welcome back! Glad to see you again! 🎉",
+    "login_fail": "Oops! Username or password is wrong. Try again, okay?",
+    "register_btn": "Create Account",
+    "register_success": "Account created! Please log in to get started.",
+    "register_fail": "That username's already taken. Please try another!",
+    "logout": "Log out",
+    "profile": "👤 Profile",
+    "weight": "Weight (kg)",
+    "height": "Height (cm)",
+    "age": "Age",
+    "gender": "Gender",
+    "activity": "Activity Level",
+    "goal": "Goal",
+    "save_profile": "Save My Profile",
+    "profile_saved": "Profile updated! Let’s crush your goals! 👍",
+    "water_tracker": "💧 Water Tracker",
+    "add_water": "Add a glass (250ml)",
+    "today_water": "You've had {0} ml of 2000 ml today!",
+    "water_info": "Keep drinking water—hydration is key! 🚰",
+    "water_done": "Awesome! Water goal reached! 💙",
+    "quick_log": "🍽️ Quick Add (No Photo Needed)",
+    "type_food": "Type food name...",
+    "grams": "How many grams?",
+    "add_to_log": "Add to Log",
+    "food_not_found": "Sorry, I couldn't find that food in the database.",
+    "food_added": "Logged: {food} ({gram}g) = {cal} kcal",
+    "scan_image": "Scan your food (photo)",
+    "upload_image": "Upload Image",
+    "camera": "Take a Photo",
+    "multiple_detected": "Found several foods! Let's see what you have:",
+    "single_detected": "Food found! Here’s the result:",
+    "ai_guess": "🤖 AI thinks this is: {name}",
+    "ai_confidence": "Confidence: {conf:.1f}%",
+    "nutrition_info": "🍴 Nutrition Info",
+    "no_nutrition": "Sorry, I don't have nutrition info for this food yet.",
+    "logged_total": "Today’s total: {total} kcal / {target} kcal",
+    "remaining": "Left for today: {remain} kcal",
+    "over_limit": "Oh no! You’ve gone over your calorie target today. Tomorrow is a new chance! 💪",
+    "under_limit": "You still have room for more healthy food today! Don’t skip meals, okay?",
+    "on_track": "Great job! You’re on track today!",
+    "logout_success": "You’ve logged out. See you soon! 👋",
+    "snack_suggestion": "How about a snack? Try {snack} ({cal} kcal)",
+    "motivation": [
+        "Every step counts. Keep going! 💪",
+        "Small progress is still progress. Consistency matters.",
+        "You’re doing amazing today!",
+        "Healthy body, happy mind!",
+        "Progress, not perfection. You got this!"
+    ]
+}
 
+# ======================= DATABASE & AUTH =======================
 def get_conn():
     db_path = os.path.join(DATA_DIR, "calorie_tracker.db")
     return sqlite3.connect(db_path, check_same_thread=False)
@@ -199,9 +257,9 @@ def calculate_tdee(weight, height, age, gender, activity_level):
         "Light (1-3 days/week)": 1.375,
         "Moderate (3-5 days/week)": 1.55,
         "Active (6-7 days/week)": 1.725,
-        "Very Active (hard exercise & job)": 1.9
+        "Very Active (hard exercise & job)": 1.9,
     }
-    tdee = bmr * activity_dict[activity_level]
+    tdee = bmr * activity_dict.get(activity_level, 1.2)
     return round(tdee)
 
 def calculate_deficit_limit(tdee, goal):
@@ -272,11 +330,8 @@ def predict_yolo_api(image_bytes):
 
 # ======================= STREAMLIT MAIN PAGE =======================
 st.set_page_config(page_title="MealMind AI", page_icon="🧠🍽️", layout="centered")
-st.title('🧠🍽️ MealMind AI')
-st.markdown("""
-Your smart assistant for tracking meals, calories, and water intake.  
-Snap your food, log manually, and see your nutrition progress — all powered by AI!
-""")
+st.title("🧠🍽️ MealMind AI")
+st.markdown(L["welcome"])
 
 # === LOGIN/REGISTER ===
 if "user_id" not in st.session_state:
@@ -285,60 +340,57 @@ if "username" not in st.session_state:
     st.session_state.username = None
 
 if not st.session_state.user_id:
-    tab1, tab2 = st.tabs(["Login", "Register"])
+    tab1, tab2 = st.tabs([L["login"], L["register"]])
     with tab1:
-        st.subheader("Login")
-        login_username = st.text_input("Username", key="loginuser")
-        login_password = st.text_input("Password", type="password", key="loginpass")
-        if st.button("Login"):
+        st.subheader(L["login"])
+        login_username = st.text_input(L["username"], key="loginuser")
+        login_password = st.text_input(L["password"], type="password", key="loginpass")
+        if st.button(L["login_btn"]):
             user_id = login(login_username, login_password)
             if user_id:
                 st.session_state.user_id = user_id
                 st.session_state.username = login_username
                 st.balloons()
-                st.toast("Login successful, welcome!", icon="👋")
+                st.success(L["login_success"])
                 st.rerun()
             else:
-                st.error("Login failed! Please check your username or password.")
+                st.error(L["login_fail"])
     with tab2:
-        st.subheader("Register")
-        reg_username = st.text_input("Username", key="reguser")
-        reg_password = st.text_input("Password", type="password", key="regpass")
-        if st.button("Register"):
+        st.subheader(L["register"])
+        reg_username = st.text_input(L["username"], key="reguser")
+        reg_password = st.text_input(L["password"], type="password", key="regpass")
+        if st.button(L["register_btn"]):
             if register(reg_username, reg_password):
-                st.success("Registration successful! Please login.")
+                st.success(L["register_success"])
             else:
-                st.error("Username already taken!")
+                st.error(L["register_fail"])
     st.stop()
 
-st.sidebar.markdown(f"Hello, **{st.session_state.username}**!")
-if st.sidebar.button("Logout"):
+st.sidebar.markdown(f"👋 Hi, **{st.session_state.username}**!")
+if st.sidebar.button(L["logout"]):
     st.session_state.user_id = None
     st.session_state.username = None
+    st.success(L["logout_success"])
     st.rerun()
 
 # ========== PROFILE FORM ==========
 profile = get_profile(st.session_state.user_id)
 with st.sidebar.form("profile_form"):
-    weight = st.number_input("Weight (kg)", min_value=30, max_value=300, value=int(profile['weight']) if profile else 70)
-    height = st.number_input("Height (cm)", min_value=100, max_value=250, value=int(profile['height']) if profile else 170)
-    age = st.number_input("Age", min_value=10, max_value=100, value=int(profile['age']) if profile else 25)
-    gender = st.selectbox("Gender", ["Male", "Female"], index=0 if (profile and profile['gender']=="Male") else 1)
-    activity = st.selectbox("Activity Level", [
+    weight = st.number_input(L["weight"], min_value=30, max_value=300, value=int(profile['weight']) if profile else 70)
+    height = st.number_input(L["height"], min_value=100, max_value=250, value=int(profile['height']) if profile else 170)
+    age = st.number_input(L["age"], min_value=10, max_value=100, value=int(profile['age']) if profile else 25)
+    gender = st.selectbox(L["gender"], ["Male", "Female"], index=0 if (profile and profile['gender']=="Male") else 1)
+    activity_list = [
         "Sedentary (rarely exercise)", "Light (1-3 days/week)",
         "Moderate (3-5 days/week)", "Active (6-7 days/week)", "Very Active (hard exercise & job)"
-    ], index=0 if not profile else [
-        "Sedentary (rarely exercise)", "Light (1-3 days/week)",
-        "Moderate (3-5 days/week)", "Active (6-7 days/week)", "Very Active (hard exercise & job)"
-    ].index(profile['activity']))
-    goal = st.selectbox("Goal", [
+    ]
+    activity = st.selectbox(L["activity"], activity_list, index=0 if not profile else activity_list.index(profile['activity']))
+    goal_list = [
         "Lose weight (deficit 500 kcal)", "Lose fast (deficit 750 kcal)",
         "Maintain", "Gain weight (surplus 300 kcal)"
-    ], index=0 if not profile else [
-        "Lose weight (deficit 500 kcal)", "Lose fast (deficit 750 kcal)",
-        "Maintain", "Gain weight (surplus 300 kcal)"
-    ].index(profile['goal']))
-    submit_profile = st.form_submit_button("Save Profile")
+    ]
+    goal = st.selectbox(L["goal"], goal_list, index=0 if not profile else goal_list.index(profile['goal']))
+    submit_profile = st.form_submit_button(L["save_profile"])
 
 if submit_profile:
     tdee = calculate_tdee(weight, height, age, gender, activity)
@@ -353,7 +405,7 @@ if submit_profile:
         "tdee": tdee,
         "daily_limit": daily_limit
     })
-    st.success("Profile saved!")
+    st.success(L["profile_saved"])
     st.rerun()
 
 profile = get_profile(st.session_state.user_id)
@@ -364,50 +416,50 @@ if profile:
         f"Goal: **{profile['goal']}**"
     )
 else:
-    st.sidebar.warning("Please complete your profile first!")
+    st.sidebar.warning("Complete your profile so MealMind can work best for you!")
 
 # ========== WATER TRACKER ==========
-st.sidebar.header("💧 Water Tracker")
-if st.sidebar.button("Add 1 Glass (250ml)"):
+st.sidebar.header(L["water_tracker"])
+if st.sidebar.button(L["add_water"]):
     add_water(st.session_state.user_id)
 water_today = get_water(st.session_state.user_id)
 water_target = 8
 st.sidebar.progress(min(water_today / water_target, 1.0))
-st.sidebar.markdown(f"**Today:** {water_today*250} ml / 2000 ml")
+st.sidebar.markdown(L["today_water"].format(water_today*250))
 if water_today < water_target:
-    st.sidebar.info("Drinking enough water supports your health and energy!")
+    st.sidebar.info(L["water_info"])
 else:
-    st.sidebar.success("Water goal achieved, well done!")
+    st.sidebar.success(L["water_done"])
 
-# ========== FAST MANUAL LOG ==========
-with st.expander("🍽️ Quick Food Logging (No Image Scan)"):
+# ========== QUICK MANUAL LOG ==========
+with st.expander(L["quick_log"]):
     nutritional_data = load_nutrition_data()
-    manual_food = st.text_input("Type a food (e.g.: fried rice)")
-    manual_gram = st.number_input("How many grams?", value=100, step=10)
-    if st.button("Add to Log (Manual)"):
+    manual_food = st.text_input(L["type_food"])
+    manual_gram = st.number_input(L["grams"], value=100, step=10)
+    if st.button(L["add_to_log"]):
         matches = nutritional_data[nutritional_data["food_name"].str.contains(manual_food.lower(), na=False)]
         if not matches.empty:
             n = matches.iloc[0]
             cal = (manual_gram / float(n['weight'])) * float(n['calories'])
-            st.success(f"Added: {n['food_name'].title()} ({manual_gram}g) = {cal:.0f} kcal")
+            st.success(L["food_added"].format(food=n['food_name'].title(), gram=manual_gram, cal=int(cal)))
             add_log(st.session_state.user_id, n['food_name'], cal)
         else:
-            st.warning("Food not found in the database!")
+            st.warning(L["food_not_found"])
 
 # ========== AI FOOD SCAN ==========
-input_method = st.radio("📸 Choose image input method:", ["📁 Upload File", "📷 Use Camera"])
+input_method = st.radio(L["scan_image"], [L["upload_image"], L["camera"]])
 image_data = None
-if input_method == "📁 Upload File":
-    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
+if input_method == L["upload_image"]:
+    uploaded_file = st.file_uploader(L["upload_image"], type=["jpg", "jpeg", "png"])
     if uploaded_file:
         image_data = uploaded_file
-elif input_method == "📷 Use Camera":
-    camera_image = st.camera_input("Take a picture")
+elif input_method == L["camera"]:
+    camera_image = st.camera_input(L["camera"])
     if camera_image:
         image_data = camera_image
 
 if image_data and profile:
-    st.markdown("### 🔍 Scanning your food image...")
+    st.markdown("### 🔍 Scanning your food photo...")
     image_bytes = image_data.read()
     nutritional_data = load_nutrition_data()
     yolo_results = predict_yolo_api(image_bytes)
@@ -415,16 +467,16 @@ if image_data and profile:
     food_logged = []
 
     if len(yolo_results) > 1:
-        st.markdown("🔁 **Multiple foods detected. Using AI detection.**")
-        st.image(Image.open(BytesIO(image_bytes)), caption='Detected Multiple Foods', use_container_width=True)
+        st.markdown("🔁 **" + L["multiple_detected"] + "**")
+        st.image(Image.open(BytesIO(image_bytes)), caption=L["multiple_detected"], use_container_width=True)
         st.markdown("### 🍽️ Detected Foods:")
         for item in yolo_results:
             food_class = item["class"]
             conf = item["confidence"]
             nutrition = get_nutrition_info(food_class, nutritional_data)
             if nutrition is not None:
-                st.markdown(f"- **{food_class}** (Conf: {conf*100:.1f}%)")
-                st.markdown(f"  - ⚖️ Weight: {nutrition['weight']} g")
+                st.markdown(f"- **{food_class}** ({L['ai_confidence'].format(conf=conf*100)})")
+                st.markdown(f"  - ⚖️ {L['weight']}: {nutrition['weight']} g")
                 st.markdown(f"  - 🍔 Calories: {nutrition['calories']} kcal")
                 st.markdown(f"  - 🍗 Protein: {nutrition['protein']} g")
                 st.markdown(f"  - 🍞 Carbs: {nutrition['carbohydrates']} g")
@@ -435,9 +487,9 @@ if image_data and profile:
                 total_calories += float(nutrition['calories'])
                 food_logged.append((food_class, float(nutrition['calories'])))
             else:
-                st.warning(f"Nutritional info not found for {food_class}")
+                st.warning(L["no_nutrition"])
     else:
-        st.markdown("🔁 **Single food detected. Predicting with API...**")
+        st.markdown("🔁 **" + L["single_detected"] + "**")
         food_pred, conf_food = predict_food_api(image_bytes)
         fruit_pred, conf_fruit = predict_fruit_api(image_bytes)
         if conf_fruit > conf_food and conf_fruit > 0.5:
@@ -449,12 +501,12 @@ if image_data and profile:
             final_conf = conf_food
 
         nutrition = get_nutrition_info(final_class, nutritional_data)
-        st.image(Image.open(BytesIO(image_bytes)), caption='Your Food Image', use_container_width=True)
-        st.markdown(f"### 🧠 Predicted Food: *{final_class}*")
-        st.markdown(f"✅ Confidence: *{final_conf*100:.2f}%*")
+        st.image(Image.open(BytesIO(image_bytes)), caption=L["ai_guess"].format(name=final_class), use_container_width=True)
+        st.markdown(f"### {L['ai_guess'].format(name=final_class)}")
+        st.markdown(f"✅ {L['ai_confidence'].format(conf=final_conf*100)}")
         if nutrition is not None:
-            st.markdown("### 🍴 Nutritional Information:")
-            st.markdown(f"- ⚖️ Weight: {nutrition['weight']} g")
+            st.markdown(f"#### {L['nutrition_info']}")
+            st.markdown(f"- ⚖️ {L['weight']}: {nutrition['weight']} g")
             st.markdown(f"- 🍔 Calories: {nutrition['calories']} kcal")
             st.markdown(f"- 🍗 Protein: {nutrition['protein']} g")
             st.markdown(f"- 🍞 Carbs: {nutrition['carbohydrates']} g")
@@ -465,17 +517,16 @@ if image_data and profile:
             total_calories += float(nutrition['calories'])
             food_logged.append((final_class, float(nutrition['calories'])))
         else:
-            st.warning("Nutritional info not found for this food.")
+            st.warning(L["no_nutrition"])
 
-    # === Log all detected foods automatically ===
     for food, cal in food_logged:
         add_log(st.session_state.user_id, food, cal)
 
-    st.markdown(f"## 🧾 Total Estimated Calories This Log: **{total_calories:.0f} kcal**")
+    st.markdown(f"## 🧾 Total Calories This Log: **{total_calories:.0f} kcal**")
 
 # ========== TODAY LOG TABLE ==========
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📅 Daily Calorie Log")
+st.sidebar.markdown("### 📅 Today's Log")
 df = get_today_logs(st.session_state.user_id)
 if not df.empty:
     total_today = df["calories"].sum()
@@ -485,7 +536,7 @@ if not df.empty:
         total_today = 0
     st.sidebar.dataframe(df.tail(10), use_container_width=True)
 else:
-    st.sidebar.info("No foods logged today yet.")
+    st.sidebar.info("No foods logged yet today. Let's start!")
     total_today = 0
 
 if profile:
@@ -501,14 +552,14 @@ if profile:
     else:
         st.sidebar.progress(0)
         remaining = 0
-    st.sidebar.markdown(f"**Today's total:** {total_today:.0f} kcal / {daily_limit:.0f} kcal")
-    st.sidebar.markdown(f"**Remaining today:** {remaining:.0f} kcal")
+    st.sidebar.markdown(L["logged_total"].format(total=int(total_today), target=int(daily_limit)))
+    st.sidebar.markdown(L["remaining"].format(remain=int(remaining)))
     if total_today < daily_limit - 400:
-        st.sidebar.warning("⚠️ Too much deficit! Consider eating a bit more for a healthy balance.")
+        st.sidebar.warning(L["under_limit"])
     elif total_today > daily_limit:
-        st.sidebar.error("⚠️ You have exceeded your daily target.")
+        st.sidebar.error(L["over_limit"])
     else:
-        st.sidebar.success("✅ You are on track for your calorie goal!")
+        st.sidebar.success(L["on_track"])
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 📈 Weekly Summary")
@@ -516,48 +567,33 @@ if profile:
     if not week_df.empty:
         week_df['date'] = pd.to_datetime(week_df['date'])
         avg_deficit = daily_limit - week_df["calories"].mean()
-        st.sidebar.markdown(f"**Average deficit/day this week:** {avg_deficit:.0f} kcal")
+        st.sidebar.markdown(f"Average deficit/day: {avg_deficit:.0f} kcal")
         if avg_deficit > 0:
             est_loss = avg_deficit * 7 / 7700
-            st.sidebar.markdown(f"**Estimated fat loss/week:** {est_loss:.2f} kg")
+            st.sidebar.markdown(f"Estimated fat loss/week: {est_loss:.2f} kg")
         chart = alt.Chart(week_df).mark_line(point=True).encode(
             x='date:T', y='calories:Q'
-        ).properties(title='Daily Calorie Trend (This Week)').interactive()
+        ).properties(title= 'Daily Calorie Trend (This Week)').interactive()
         st.sidebar.altair_chart(chart, use_container_width=True)
-    else:
-        avg_deficit = 0
-
     nutritional_data = load_nutrition_data()
     if remaining < 200 and remaining > 0:
         nutritional_data['calories'] = pd.to_numeric(nutritional_data['calories'], errors='coerce').fillna(0)
         snack_choices = nutritional_data[(nutritional_data['calories'] <= remaining) & (nutritional_data['calories'] > 0)]
         if not snack_choices.empty:
             snack = snack_choices.sample(1).iloc[0]
-            st.sidebar.info(f"Snack Suggestion: {snack['food_name'].title()} ({snack['calories']} kcal)")
-
+            st.sidebar.info(L["snack_suggestion"].format(snack=snack['food_name'].title(), cal=int(snack['calories'])))
     st.sidebar.markdown("---")
-    # Export CSV (today)
     if not df.empty:
         csv = df.to_csv(index=False).encode('utf-8')
         st.sidebar.download_button("⬇️ Download Today's Log (CSV)", csv, "calorie_log_today.csv", "text/csv")
-    # Export CSV (all log)
     all_log = get_all_logs(st.session_state.user_id)
     if not all_log.empty:
         csvall = all_log.to_csv(index=False).encode('utf-8')
         st.sidebar.download_button("⬇️ Download ALL Log", csvall, "calorie_log_all.csv", "text/csv")
-    # Motivation
-    quotes = [
-        "Every healthy choice today brings you closer to your goals.",
-        "Small progress is still progress!",
-        "Consistency is the key to real results.",
-        "Eat well, drink enough, move more.",
-        "Don't give up—change takes time.",
-        "Big changes come from small healthy habits."
-    ]
     st.sidebar.markdown("---")
-    st.sidebar.success(random.choice(quotes))
+    st.sidebar.success(random.choice(L["motivation"]))
 else:
-    st.sidebar.info("Complete your profile to activate full calorie tracking and summary.")
+    st.sidebar.info("Complete your profile to activate full tracking and see your progress!")
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Made with 💪 and AI for smarter, healthier living.")
