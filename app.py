@@ -10,9 +10,11 @@ import requests
 from io import BytesIO
 import altair as alt
 import random
+import time  # ⬅️ untuk retry/backoff
 
 API_URL = "https://raflyml-model-meal-mind-ai.hf.space"
 DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)  # ⬅️ pastikan folder data ada
 
 # ============ STRINGS (ENGLISH ONLY, FRIENDLY) ============
 L = {
@@ -277,61 +279,80 @@ def calculate_deficit_limit(tdee, goal):
 # ========== NUTRITION DATA ==========
 @st.cache_data
 def load_nutrition_data():
-    df = pd.read_csv(os.path.join(DATA_DIR, 'nutrition_data.csv'))
+    path = os.path.join(DATA_DIR, 'nutrition_data.csv')
+    if not os.path.exists(path):
+        st.error("File nutrition_data.csv tidak ditemukan di folder 'data'.")
+        return pd.DataFrame(columns=["food_name","calories","weight","protein","carbohydrates","fat","fiber","sugar","sodium"])
+    df = pd.read_csv(path)
     df = df.rename(columns={"label": "food_name"})
     for col in ['calories','weight','protein','carbohydrates','fat','fiber','sugar','sodium']:
         if col in df:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    if 'food_name' in df:
+        df['food_name'] = df['food_name'].astype(str)
     return df
 
 def get_nutrition_info(food_class, nutritional_data):
+    if not food_class or nutritional_data is None or nutritional_data.empty:
+        return None
     row = nutritional_data[nutritional_data['food_name'].str.lower() == str(food_class).lower()]
     return row.iloc[0] if not row.empty else None
 
 # ========= API FASTAPI =========
+def _post_image(endpoint, image_bytes, timeout=120, retries=3):
+    """
+    Kirim multipart dengan field 'file' + filename + MIME.
+    Ada retry & error message agar terlihat kalau gagal.
+    """
+    url = API_URL + endpoint
+    files = {'file': ('image.jpg', image_bytes, 'image/jpeg')}
+    last_err = None
+    for i in range(retries):
+        try:
+            res = requests.post(url, files=files, timeout=timeout)
+            if res.status_code == 200:
+                return res.json()
+            else:
+                last_err = f"HTTP {res.status_code} - {res.text[:400]}"
+        except requests.exceptions.RequestException as e:
+            last_err = str(e)
+        time.sleep(2 * (i + 1))  # backoff 2s, 4s, 6s
+    st.error(f"Gagal panggil API: {url} → {last_err}")
+    return None
+
 def predict_food_api(image_bytes):
-    files = {'file': image_bytes}
-    try:
-        res = requests.post(API_URL + "/predict/food", files=files, timeout=30)
-        if res.status_code == 200:
-            result = res.json()
-            return result["class"], result["confidence"]
-        else:
-            return None, 0
-    except Exception as e:
-        print("Error Food API:", e)
-        return None, 0
+    data = _post_image("/predict/food", image_bytes)
+    if not data:
+        return None, 0.0
+    return data.get("class"), float(data.get("confidence", 0.0))
 
 def predict_fruit_api(image_bytes):
-    files = {'file': image_bytes}
-    try:
-        res = requests.post(API_URL + "/predict/fruit", files=files, timeout=30)
-        if res.status_code == 200:
-            result = res.json()
-            return result["class"], result["confidence"]
-        else:
-            return None, 0
-    except Exception as e:
-        print("Error Fruit API:", e)
-        return None, 0
+    data = _post_image("/predict/fruit", image_bytes)
+    if not data:
+        return None, 0.0
+    return data.get("class"), float(data.get("confidence", 0.0))
 
 def predict_yolo_api(image_bytes):
-    files = {'file': image_bytes}
-    try:
-        res = requests.post(API_URL + "/predict/yolo", files=files, timeout=60)
-        if res.status_code == 200:
-            result = res.json()
-            return result["results"]
-        else:
-            return []
-    except Exception as e:
-        print("Error YOLO API:", e)
+    data = _post_image("/predict/yolo", image_bytes)
+    if not data:
         return []
+    return data.get("results", [])
 
 # ======================= STREAMLIT MAIN PAGE =======================
 st.set_page_config(page_title="MealMind AI", page_icon="🧠🍽️", layout="centered")
 st.title("🧠🍽️ MealMind AI")
 st.markdown(L["welcome"])
+
+# (opsional) health check singkat
+@st.cache_data(ttl=60)
+def check_api_root():
+    try:
+        r = requests.get(API_URL + "/", timeout=15)
+        return r.ok
+    except Exception:
+        return False
+if not check_api_root():
+    st.warning("API belum merespons. Jika baru dihidupkan, tunggu inisialisasi model dulu.")
 
 # === LOGIN/REGISTER ===
 if "user_id" not in st.session_state:
@@ -437,10 +458,11 @@ with st.expander(L["quick_log"]):
     manual_food = st.text_input(L["type_food"])
     manual_gram = st.number_input(L["grams"], value=100, step=10)
     if st.button(L["add_to_log"]):
-        matches = nutritional_data[nutritional_data["food_name"].str.contains(manual_food.lower(), na=False)]
+        matches = nutritional_data[nutritional_data["food_name"].str.contains(manual_food, case=False, na=False, regex=False)]
         if not matches.empty:
             n = matches.iloc[0]
-            cal = (manual_gram / float(n['weight'])) * float(n['calories'])
+            base_w = float(n['weight']) if float(n['weight']) > 0 else 100.0
+            cal = (manual_gram / base_w) * float(n['calories'])
             st.success(L["food_added"].format(food=n['food_name'].title(), gram=manual_gram, cal=int(cal)))
             add_log(st.session_state.user_id, n['food_name'], cal)
         else:
@@ -466,13 +488,13 @@ if image_data and profile:
     total_calories = 0
     food_logged = []
 
-    if len(yolo_results) > 1:
+    if isinstance(yolo_results, list) and len(yolo_results) > 1:
         st.markdown("🔁 **" + L["multiple_detected"] + "**")
         st.image(Image.open(BytesIO(image_bytes)), caption=L["multiple_detected"], use_container_width=True)
         st.markdown("### 🍽️ Detected Foods:")
         for item in yolo_results:
-            food_class = item["class"]
-            conf = item["confidence"]
+            food_class = item.get("class")
+            conf = item.get("confidence", 0)
             nutrition = get_nutrition_info(food_class, nutritional_data)
             if nutrition is not None:
                 st.markdown(f"- **{food_class}** ({L['ai_confidence'].format(conf=conf*100)})")
@@ -492,32 +514,36 @@ if image_data and profile:
         st.markdown("🔁 **" + L["single_detected"] + "**")
         food_pred, conf_food = predict_food_api(image_bytes)
         fruit_pred, conf_fruit = predict_fruit_api(image_bytes)
+
+        final_class = None
+        final_conf = 0.0
         if conf_fruit > conf_food and conf_fruit > 0.5:
             st.info("🍏 The fruit model is more confident. Using fruit model prediction.")
-            final_class = fruit_pred
-            final_conf = conf_fruit
+            final_class, final_conf = fruit_pred, conf_fruit
         else:
-            final_class = food_pred
-            final_conf = conf_food
+            final_class, final_conf = food_pred, conf_food
 
-        nutrition = get_nutrition_info(final_class, nutritional_data)
-        st.image(Image.open(BytesIO(image_bytes)), caption=L["ai_guess"].format(name=final_class), use_container_width=True)
-        st.markdown(f"### {L['ai_guess'].format(name=final_class)}")
-        st.markdown(f"✅ {L['ai_confidence'].format(conf=final_conf*100)}")
-        if nutrition is not None:
-            st.markdown(f"#### {L['nutrition_info']}")
-            st.markdown(f"- ⚖️ {L['weight']}: {nutrition['weight']} g")
-            st.markdown(f"- 🍔 Calories: {nutrition['calories']} kcal")
-            st.markdown(f"- 🍗 Protein: {nutrition['protein']} g")
-            st.markdown(f"- 🍞 Carbs: {nutrition['carbohydrates']} g")
-            st.markdown(f"- 🧈 Fat: {nutrition['fat']} g")
-            st.markdown(f"- 🌾 Fiber: {nutrition['fiber']} g")
-            st.markdown(f"- 🍬 Sugar: {nutrition['sugar']} g")
-            st.markdown(f"- 🧂 Sodium: {nutrition['sodium']} mg")
-            total_calories += float(nutrition['calories'])
-            food_logged.append((final_class, float(nutrition['calories'])))
+        if not final_class:
+            st.error("Tidak mendapat prediksi dari API. Coba ulang atau cek koneksi.")
         else:
-            st.warning(L["no_nutrition"])
+            nutrition = get_nutrition_info(final_class, nutritional_data)
+            st.image(Image.open(BytesIO(image_bytes)), caption=L["ai_guess"].format(name=final_class), use_container_width=True)
+            st.markdown(f"### {L['ai_guess'].format(name=final_class)}")
+            st.markdown(f"✅ {L['ai_confidence'].format(conf=final_conf*100)}")
+            if nutrition is not None:
+                st.markdown(f"#### {L['nutrition_info']}")
+                st.markdown(f"- ⚖️ {L['weight']}: {nutrition['weight']} g")
+                st.markdown(f"- 🍔 Calories: {nutrition['calories']} kcal")
+                st.markdown(f"- 🍗 Protein: {nutrition['protein']} g")
+                st.markdown(f"- 🍞 Carbs: {nutrition['carbohydrates']} g")
+                st.markdown(f"- 🧈 Fat: {nutrition['fat']} g")
+                st.markdown(f"- 🌾 Fiber: {nutrition['fiber']} g")
+                st.markdown(f"- 🍬 Sugar: {nutrition['sugar']} g")
+                st.markdown(f"- 🧂 Sodium: {nutrition['sodium']} mg")
+                total_calories += float(nutrition['calories'])
+                food_logged.append((final_class, float(nutrition['calories'])))
+            else:
+                st.warning(L["no_nutrition"])
 
     for food, cal in food_logged:
         add_log(st.session_state.user_id, food, cal)
@@ -573,10 +599,10 @@ if profile:
             st.sidebar.markdown(f"Estimated fat loss/week: {est_loss:.2f} kg")
         chart = alt.Chart(week_df).mark_line(point=True).encode(
             x='date:T', y='calories:Q'
-        ).properties(title= 'Daily Calorie Trend (This Week)').interactive()
+        ).properties(title='Daily Calorie Trend (This Week)').interactive()
         st.sidebar.altair_chart(chart, use_container_width=True)
     nutritional_data = load_nutrition_data()
-    if remaining < 200 and remaining > 0:
+    if 'remaining' in locals() and remaining < 200 and remaining > 0 and nutritional_data is not None and not nutritional_data.empty:
         nutritional_data['calories'] = pd.to_numeric(nutritional_data['calories'], errors='coerce').fillna(0)
         snack_choices = nutritional_data[(nutritional_data['calories'] <= remaining) & (nutritional_data['calories'] > 0)]
         if not snack_choices.empty:
