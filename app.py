@@ -10,13 +10,14 @@ import requests
 from io import BytesIO
 import altair as alt
 import random
-import time  # for retry/backoff
+import time  # retry/backoff
 
+# ========= CONFIG =========
 API_URL = "https://raflyml-model-meal-mind-ai.hf.space"
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)  # ensure data directory exists
 
-# ============ STRINGS (ENGLISH ONLY, FRIENDLY) ============
+# ========= COPY TEXT (ENGLISH ONLY) =========
 L = {
     "welcome": "👋 Welcome to MealMind AI! Your friendly smart buddy for a healthier you. Track meals, water, and progress—easily & enjoyably!",
     "login": "Login",
@@ -72,10 +73,19 @@ L = {
         "You’re doing amazing today!",
         "Healthy body, happy mind!",
         "Progress, not perfection. You got this!"
-    ]
+    ],
+    # Friendlier scan flow
+    "analyze_photo": "Analyze Photo",
+    "adjust_portion": "Adjust portion (grams)",
+    "add_to_diary": "Add to Diary",
+    "analysis_running": "Analyzing your photo… models are working",
+    "analysis_ready": "Analysis complete",
+    "nothing_detected": "Hmm, I couldn't detect any food. Try a closer, brighter photo.",
+    "preview": "Preview",
+    "logged_ok": "Added to your diary 🎉",
 }
 
-# ======================= DATABASE & AUTH =======================
+# ========= DB & AUTH =========
 def get_conn():
     db_path = os.path.join(DATA_DIR, "calorie_tracker.db")
     return sqlite3.connect(db_path, check_same_thread=False)
@@ -162,8 +172,7 @@ def get_profile(user_id):
     if row:
         keys = ['weight','height','age','gender','activity','goal','tdee','daily_limit']
         return dict(zip(keys, row))
-    else:
-        return None
+    return None
 
 def add_log(user_id, food, calories):
     try:
@@ -273,10 +282,9 @@ def calculate_deficit_limit(tdee, goal):
         return tdee
     elif goal == "Gain weight (surplus 300 kcal)":
         return tdee + 300
-    else:
-        return tdee
+    return tdee
 
-# ========== NUTRITION DATA ==========
+# ========= NUTRITION DATA =========
 @st.cache_data
 def load_nutrition_data():
     path = os.path.join(DATA_DIR, 'nutrition_data.csv')
@@ -302,7 +310,7 @@ def get_nutrition_info(food_class, nutritional_data):
 def _post_image(endpoint, image_bytes, timeout=120, retries=3):
     """
     Send multipart/form-data with field 'file' including filename and MIME.
-    Retries with exponential-ish backoff and surfaces clear errors to the UI.
+    Retries with simple backoff and surfaces clear errors to the UI.
     """
     url = API_URL + endpoint
     files = {'file': ('image.jpg', image_bytes, 'image/jpeg')}
@@ -338,12 +346,12 @@ def predict_yolo_api(image_bytes):
         return []
     return data.get("results", [])
 
-# ======================= STREAMLIT MAIN PAGE =======================
+# ========= APP =========
 st.set_page_config(page_title="MealMind AI", page_icon="🧠🍽️", layout="centered")
 st.title("🧠🍽️ MealMind AI")
 st.markdown(L["welcome"])
 
-# Optional: quick API health-check (cached for 60s)
+# Optional health check (cached 60s)
 @st.cache_data(ttl=60)
 def check_api_root():
     try:
@@ -354,7 +362,7 @@ def check_api_root():
 if not check_api_root():
     st.warning("API isn’t responding yet. If the Space just woke up, models may still be loading.")
 
-# === LOGIN/REGISTER ===
+# ---- LOGIN / REGISTER ----
 if "user_id" not in st.session_state:
     st.session_state.user_id = None
 if "username" not in st.session_state:
@@ -373,6 +381,10 @@ if not st.session_state.user_id:
                 st.session_state.username = login_username
                 st.balloons()
                 st.success(L["login_success"])
+                try:
+                    st.toast("Logged in ✅")  # available in newer Streamlit
+                except Exception:
+                    pass
                 st.rerun()
             else:
                 st.error(L["login_fail"])
@@ -387,6 +399,7 @@ if not st.session_state.user_id:
                 st.error(L["register_fail"])
     st.stop()
 
+# ---- SIDEBAR: SESSION ----
 st.sidebar.markdown(f"👋 Hi, **{st.session_state.username}**!")
 if st.sidebar.button(L["logout"]):
     st.session_state.user_id = None
@@ -394,7 +407,7 @@ if st.sidebar.button(L["logout"]):
     st.success(L["logout_success"])
     st.rerun()
 
-# ========== PROFILE FORM ==========
+# ---- SIDEBAR: PROFILE ----
 profile = get_profile(st.session_state.user_id)
 with st.sidebar.form("profile_form"):
     weight = st.number_input(L["weight"], min_value=30, max_value=300, value=int(profile['weight']) if profile else 70)
@@ -427,6 +440,10 @@ if submit_profile:
         "daily_limit": daily_limit
     })
     st.success(L["profile_saved"])
+    try:
+        st.toast("Profile saved ✅")
+    except Exception:
+        pass
     st.rerun()
 
 profile = get_profile(st.session_state.user_id)
@@ -439,7 +456,7 @@ if profile:
 else:
     st.sidebar.warning("Complete your profile so MealMind can work best for you!")
 
-# ========== WATER TRACKER ==========
+# ---- SIDEBAR: WATER ----
 st.sidebar.header(L["water_tracker"])
 if st.sidebar.button(L["add_water"]):
     add_water(st.session_state.user_id)
@@ -452,7 +469,7 @@ if water_today < water_target:
 else:
     st.sidebar.success(L["water_done"])
 
-# ========== QUICK MANUAL LOG ==========
+# ---- QUICK MANUAL LOG ----
 with st.expander(L["quick_log"]):
     nutritional_data = load_nutrition_data()
     manual_food = st.text_input(L["type_food"])
@@ -468,8 +485,11 @@ with st.expander(L["quick_log"]):
         else:
             st.warning(L["food_not_found"])
 
-# ========== AI FOOD SCAN (NOW WORKS EVEN WITHOUT PROFILE) ==========
-input_method = st.radio(L["scan_image"], [L["upload_image"], L["camera"]])
+# ---- FOOD SCAN — FRIENDLIER FLOW ----
+st.markdown("---")
+st.subheader("📷 Food Scan")
+
+input_method = st.radio(L["scan_image"], [L["upload_image"], L["camera"]], horizontal=True)
 image_data = None
 if input_method == L["upload_image"]:
     uploaded_file = st.file_uploader(L["upload_image"], type=["jpg", "jpeg", "png"])
@@ -480,124 +500,174 @@ elif input_method == L["camera"]:
     if camera_image:
         image_data = camera_image
 
+# Keep adjustable items across reruns
+if "pending_items" not in st.session_state:
+    st.session_state.pending_items = []  # list of dicts
+
 if image_data:
+    image_bytes = image_data.read()
+    st.image(Image.open(BytesIO(image_bytes)), caption=L["preview"], use_container_width=True)
+
     if profile is None:
         st.info("Tip: Save your profile in the sidebar to enable calorie targets and progress insights. Scanning still works without it 👍")
 
-    st.markdown("### 🔍 Scanning your food photo...")
-    image_bytes = image_data.read()
-    nutritional_data = load_nutrition_data()
-    total_calories = 0.0
-    food_logged = []
+    cols = st.columns([1, 1])
+    analyze_clicked = cols[0].button(f"🔎 {L['analyze_photo']}", use_container_width=True)
 
-    # Try multi-object detection (YOLO) first
-    yolo_results = predict_yolo_api(image_bytes)
+    if analyze_clicked:
+        st.session_state.pending_items = []  # reset
+        try:
+            status_ctx = st.status(L["analysis_running"], expanded=True)
+        except Exception:
+            # fallback for older Streamlit
+            status_ctx = st.empty()
+            status_ctx.write(L["analysis_running"])
 
-    if isinstance(yolo_results, list) and len(yolo_results) > 1:
-        st.markdown("🔁 **" + L["multiple_detected"] + "**")
-        st.image(Image.open(BytesIO(image_bytes)), caption=L["multiple_detected"], use_container_width=True)
-        st.markdown("### 🍽️ Detected Foods:")
+        with status_ctx:
+            # Try multi-object detection (YOLO) first
+            yolo_results = predict_yolo_api(image_bytes)
+            nutritional_data = load_nutrition_data()
 
-        found_any = False
-        for item in yolo_results:
-            food_class = item.get("class")
-            conf = float(item.get("confidence", 0))
-            if not food_class:
-                continue
-            found_any = True
-            nutrition = get_nutrition_info(food_class, nutritional_data)
-            st.markdown(f"- **{food_class}** ({L['ai_confidence'].format(conf=conf*100)})")
+            if isinstance(yolo_results, list) and len(yolo_results) > 1:
+                st.write("Detected multiple foods (YOLO).")
+                found_any = False
+                for item in yolo_results:
+                    food_class = item.get("class")
+                    conf = float(item.get("confidence", 0))
+                    if not food_class:
+                        continue
+                    found_any = True
+                    nutrition = get_nutrition_info(food_class, nutritional_data)
+                    if nutrition is not None:
+                        ref_w = float(nutrition["weight"]) if float(nutrition["weight"]) > 0 else 100.0
+                        st.session_state.pending_items.append({
+                            "name": food_class,
+                            "conf": conf,
+                            "grams": ref_w,                  # default portion equals ref weight
+                            "ref_weight": ref_w,
+                            "cal_ref": float(nutrition["calories"]),
+                            "nutrition": nutrition.to_dict(),
+                        })
+                if not found_any:
+                    st.session_state.pending_items = []
+                    try:
+                        status_ctx.update(label=L["analysis_ready"], state="error")
+                    except Exception:
+                        pass
+                    st.error(L["nothing_detected"])
+                else:
+                    try:
+                        status_ctx.update(label=L["analysis_ready"], state="complete")
+                    except Exception:
+                        pass
 
-            if nutrition is not None:
-                st.markdown(f"  - ⚖️ {L['weight']}: {nutrition['weight']} g")
-                st.markdown(f"  - 🍔 Calories: {nutrition['calories']} kcal")
-                st.markdown(f"  - 🍗 Protein: {nutrition['protein']} g")
-                st.markdown(f"  - 🍞 Carbs: {nutrition['carbohydrates']} g")
-                st.markdown(f"  - 🧈 Fat: {nutrition['fat']} g")
-                st.markdown(f"  - 🌾 Fiber: {nutrition['fiber']} g")
-                st.markdown(f"  - 🍬 Sugar: {nutrition['sugar']} g")
-                st.markdown(f"  - 🧂 Sodium: {nutrition['sodium']} mg")
-                total_calories += float(nutrition['calories'])
-                food_logged.append((food_class, float(nutrition['calories'])))
             else:
-                st.warning(f"{L['no_nutrition']} ({food_class})")
+                # Single-object classification: food vs fruit
+                food_pred, conf_food = predict_food_api(image_bytes)
+                fruit_pred, conf_fruit = predict_fruit_api(image_bytes)
 
-        if not found_any:
-            st.error("The detection returned no classes. Try a clearer/closer photo.")
+                final_class, final_conf = None, 0.0
+                if (conf_fruit or 0) > (conf_food or 0) and (conf_fruit or 0) > 0.5:
+                    st.write("Fruit model selected (higher confidence).")
+                    final_class, final_conf = fruit_pred, conf_fruit
+                else:
+                    st.write("Food model selected.")
+                    final_class, final_conf = food_pred, conf_food
 
-    else:
-        # Single object: pick the best between food vs fruit model
-        st.markdown("🔁 **" + L["single_detected"] + "**")
-        food_pred, conf_food = predict_food_api(image_bytes)
-        fruit_pred, conf_fruit = predict_fruit_api(image_bytes)
+                if not final_class:
+                    try:
+                        status_ctx.update(label=L["analysis_ready"], state="error")
+                    except Exception:
+                        pass
+                    st.error("No prediction received from API. Please try again or check connectivity.")
+                else:
+                    nutrition = get_nutrition_info(final_class, nutritional_data)
+                    if nutrition is None:
+                        try:
+                            status_ctx.update(label=L["analysis_ready"], state="error")
+                        except Exception:
+                            pass
+                        st.warning(f"{L['no_nutrition']} ({final_class})")
+                    else:
+                        ref_w = float(nutrition["weight"]) if float(nutrition["weight"]) > 0 else 100.0
+                        st.session_state.pending_items = [{
+                            "name": final_class,
+                            "conf": float(final_conf or 0),
+                            "grams": ref_w,
+                            "ref_weight": ref_w,
+                            "cal_ref": float(nutrition["calories"]),
+                            "nutrition": nutrition.to_dict(),
+                        }]
+                        try:
+                            status_ctx.update(label=L["analysis_ready"], state="complete")
+                        except Exception:
+                            pass
 
-        final_class = None
-        final_conf = 0.0
-        if (conf_fruit or 0) > (conf_food or 0) and (conf_fruit or 0) > 0.5:
-            st.info("🍏 The fruit model is more confident. Using fruit model prediction.")
-            final_class, final_conf = fruit_pred, conf_fruit
-        else:
-            final_class, final_conf = food_pred, conf_food
+    # Render adjustable items + total and Add to Diary
+    if st.session_state.pending_items:
+        st.markdown("### 🍽️ Detected items")
+        total_preview_cals = 0.0
+        for i, it in enumerate(st.session_state.pending_items):
+            with st.container(border=True):
+                c1, c2 = st.columns([2, 1])
+                c1.markdown(f"**{it['name']}** · {L['ai_confidence'].format(conf=it['conf']*100)}")
+                new_grams = c2.number_input(
+                    L["adjust_portion"], min_value=10.0, max_value=1000.0, step=10.0,
+                    value=float(it["grams"]), key=f"grams_{i}"
+                )
+                it["grams"] = float(new_grams)
 
-        if not final_class:
-            st.error("No prediction received from API. Please try again or check connectivity.")
-        else:
-            st.image(Image.open(BytesIO(image_bytes)), caption=L["ai_guess"].format(name=final_class), use_container_width=True)
-            st.markdown(f"### {L['ai_guess'].format(name=final_class)}")
-            st.markdown(f"✅ {L['ai_confidence'].format(conf=(final_conf or 0)*100)}")
+                ref_w = it["ref_weight"] if it["ref_weight"] > 0 else 100.0
+                cal_scaled = (it["grams"] / ref_w) * it["cal_ref"]
+                total_preview_cals += cal_scaled
 
-            nutrition = get_nutrition_info(final_class, nutritional_data)
-            if nutrition is not None:
-                st.markdown(f"#### {L['nutrition_info']}")
-                st.markdown(f"- ⚖️ {L['weight']}: {nutrition['weight']} g")
-                st.markdown(f"- 🍔 Calories: {nutrition['calories']} kcal")
-                st.markdown(f"- 🍗 Protein: {nutrition['protein']} g")
-                st.markdown(f"- 🍞 Carbs: {nutrition['carbohydrates']} g")
-                st.markdown(f"- 🧈 Fat: {nutrition['fat']} g")
-                st.markdown(f"- 🌾 Fiber: {nutrition['fiber']} g")
-                st.markdown(f"- 🍬 Sugar: {nutrition['sugar']} g")
-                st.markdown(f"- 🧂 Sodium: {nutrition['sodium']} mg")
-                total_calories += float(nutrition['calories'])
-                food_logged.append((final_class, float(nutrition['calories'])))
-            else:
-                st.warning(L["no_nutrition"])
+                nut = it["nutrition"]
+                c1.markdown(
+                    f"- ⚖️ Reference: {nut['weight']} g  \n"
+                    f"- 🍔 Calories (ref): {nut['calories']} kcal  \n"
+                    f"- 🍗 Protein: {nut['protein']} g · 🍞 Carbs: {nut['carbohydrates']} g · 🧈 Fat: {nut['fat']} g"
+                )
 
-    # Save scan results to logs (if any)
-    for food, cal in food_logged:
-        add_log(st.session_state.user_id, food, cal)
+        st.markdown(f"### 🧾 This scan (adjusted): **{total_preview_cals:.0f} kcal**")
 
-    st.markdown(f"## 🧾 Total Calories This Log: **{total_calories:.0f} kcal**")
+        if st.button(f"✅ {L['add_to_diary']}", use_container_width=True):
+            for it in st.session_state.pending_items:
+                ref_w = it["ref_weight"] if it["ref_weight"] > 0 else 100.0
+                cal_scaled = (it["grams"] / ref_w) * it["cal_ref"]
+                add_log(st.session_state.user_id, it["name"], cal_scaled)
+            st.session_state.pending_items = []
+            st.success(L["logged_ok"])
+            try:
+                st.toast("Logged to diary ✅")
+            except Exception:
+                pass
 
-# ========== TODAY LOG TABLE ==========
+# ---- TODAY LOG ----
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📅 Today's Log")
 df = get_today_logs(st.session_state.user_id)
 if not df.empty:
-    total_today = df["calories"].sum()
-    try:
-        total_today = float(total_today)
-    except Exception:
-        total_today = 0
+    total_today = float(df["calories"].sum())
     st.sidebar.dataframe(df.tail(10), use_container_width=True)
+    cA, cB = st.sidebar.columns(2)
+    cA.metric("Today", f"{int(total_today)} kcal")
+    cB.metric("Entries", str(len(df)))
 else:
     st.sidebar.info("No foods logged yet today. Let's start!")
-    total_today = 0
+    total_today = 0.0
 
+# ---- GOAL / PROGRESS ----
 if profile:
-    daily_limit = profile["daily_limit"]
     try:
-        daily_limit = float(daily_limit)
+        daily_limit = float(profile["daily_limit"])
     except Exception:
-        daily_limit = 2000
+        daily_limit = 2000.0
 
-    if daily_limit > 0:
-        st.sidebar.progress(min(total_today / daily_limit, 1.0))
-        remaining = daily_limit - total_today
-    else:
-        st.sidebar.progress(0)
-        remaining = 0
+    remaining = max(daily_limit - total_today, 0.0)
+    st.sidebar.progress(min(total_today / max(daily_limit, 1.0), 1.0))
     st.sidebar.markdown(L["logged_total"].format(total=int(total_today), target=int(daily_limit)))
     st.sidebar.markdown(L["remaining"].format(remain=int(remaining)))
+
     if total_today < daily_limit - 400:
         st.sidebar.warning(L["under_limit"])
     elif total_today > daily_limit:
@@ -620,14 +690,17 @@ if profile:
         ).properties(title='Daily Calorie Trend (This Week)').interactive()
         st.sidebar.altair_chart(chart, use_container_width=True)
 
-    # Snack suggestion near the end of your budget
+    # Snack suggestion quick-add
     nutritional_data = load_nutrition_data()
-    if 'remaining' in locals() and remaining < 200 and remaining > 0 and nutritional_data is not None and not nutritional_data.empty:
+    if remaining < 200 and remaining > 0 and nutritional_data is not None and not nutritional_data.empty:
         nutritional_data['calories'] = pd.to_numeric(nutritional_data['calories'], errors='coerce').fillna(0)
         snack_choices = nutritional_data[(nutritional_data['calories'] <= remaining) & (nutritional_data['calories'] > 0)]
         if not snack_choices.empty:
             snack = snack_choices.sample(1).iloc[0]
-            st.sidebar.info(L["snack_suggestion"].format(snack=snack['food_name'].title(), cal=int(snack['calories'])))
+            if st.sidebar.button(f"Try: {snack['food_name'].title()} ({int(snack['calories'])} kcal)"):
+                add_log(st.session_state.user_id, snack['food_name'], float(snack['calories']))
+                st.sidebar.success("Added snack to your diary 🎉")
+
     st.sidebar.markdown("---")
     if not df.empty:
         csv = df.to_csv(index=False).encode('utf-8')
