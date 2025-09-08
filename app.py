@@ -10,11 +10,11 @@ import requests
 from io import BytesIO
 import altair as alt
 import random
-import time  # ⬅️ untuk retry/backoff
+import time  # for retry/backoff
 
 API_URL = "https://raflyml-model-meal-mind-ai.hf.space"
 DATA_DIR = "data"
-os.makedirs(DATA_DIR, exist_ok=True)  # ⬅️ pastikan folder data ada
+os.makedirs(DATA_DIR, exist_ok=True)  # ensure data directory exists
 
 # ============ STRINGS (ENGLISH ONLY, FRIENDLY) ============
 L = {
@@ -281,7 +281,7 @@ def calculate_deficit_limit(tdee, goal):
 def load_nutrition_data():
     path = os.path.join(DATA_DIR, 'nutrition_data.csv')
     if not os.path.exists(path):
-        st.error("File nutrition_data.csv tidak ditemukan di folder 'data'.")
+        st.error("File 'data/nutrition_data.csv' was not found. Please add it to proceed.")
         return pd.DataFrame(columns=["food_name","calories","weight","protein","carbohydrates","fat","fiber","sugar","sodium"])
     df = pd.read_csv(path)
     df = df.rename(columns={"label": "food_name"})
@@ -298,11 +298,11 @@ def get_nutrition_info(food_class, nutritional_data):
     row = nutritional_data[nutritional_data['food_name'].str.lower() == str(food_class).lower()]
     return row.iloc[0] if not row.empty else None
 
-# ========= API FASTAPI =========
+# ========= FASTAPI CLIENT (robust uploads, retries) =========
 def _post_image(endpoint, image_bytes, timeout=120, retries=3):
     """
-    Kirim multipart dengan field 'file' + filename + MIME.
-    Ada retry & error message agar terlihat kalau gagal.
+    Send multipart/form-data with field 'file' including filename and MIME.
+    Retries with exponential-ish backoff and surfaces clear errors to the UI.
     """
     url = API_URL + endpoint
     files = {'file': ('image.jpg', image_bytes, 'image/jpeg')}
@@ -316,8 +316,8 @@ def _post_image(endpoint, image_bytes, timeout=120, retries=3):
                 last_err = f"HTTP {res.status_code} - {res.text[:400]}"
         except requests.exceptions.RequestException as e:
             last_err = str(e)
-        time.sleep(2 * (i + 1))  # backoff 2s, 4s, 6s
-    st.error(f"Gagal panggil API: {url} → {last_err}")
+        time.sleep(2 * (i + 1))  # 2s, 4s, 6s
+    st.error(f"API call failed: {url} → {last_err}")
     return None
 
 def predict_food_api(image_bytes):
@@ -343,7 +343,7 @@ st.set_page_config(page_title="MealMind AI", page_icon="🧠🍽️", layout="ce
 st.title("🧠🍽️ MealMind AI")
 st.markdown(L["welcome"])
 
-# (opsional) health check singkat
+# Optional: quick API health-check (cached for 60s)
 @st.cache_data(ttl=60)
 def check_api_root():
     try:
@@ -352,7 +352,7 @@ def check_api_root():
     except Exception:
         return False
 if not check_api_root():
-    st.warning("API belum merespons. Jika baru dihidupkan, tunggu inisialisasi model dulu.")
+    st.warning("API isn’t responding yet. If the Space just woke up, models may still be loading.")
 
 # === LOGIN/REGISTER ===
 if "user_id" not in st.session_state:
@@ -468,7 +468,7 @@ with st.expander(L["quick_log"]):
         else:
             st.warning(L["food_not_found"])
 
-# ========== AI FOOD SCAN ==========
+# ========== AI FOOD SCAN (NOW WORKS EVEN WITHOUT PROFILE) ==========
 input_method = st.radio(L["scan_image"], [L["upload_image"], L["camera"]])
 image_data = None
 if input_method == L["upload_image"]:
@@ -480,24 +480,35 @@ elif input_method == L["camera"]:
     if camera_image:
         image_data = camera_image
 
-if image_data and profile:
+if image_data:
+    if profile is None:
+        st.info("Tip: Save your profile in the sidebar to enable calorie targets and progress insights. Scanning still works without it 👍")
+
     st.markdown("### 🔍 Scanning your food photo...")
     image_bytes = image_data.read()
     nutritional_data = load_nutrition_data()
-    yolo_results = predict_yolo_api(image_bytes)
-    total_calories = 0
+    total_calories = 0.0
     food_logged = []
+
+    # Try multi-object detection (YOLO) first
+    yolo_results = predict_yolo_api(image_bytes)
 
     if isinstance(yolo_results, list) and len(yolo_results) > 1:
         st.markdown("🔁 **" + L["multiple_detected"] + "**")
         st.image(Image.open(BytesIO(image_bytes)), caption=L["multiple_detected"], use_container_width=True)
         st.markdown("### 🍽️ Detected Foods:")
+
+        found_any = False
         for item in yolo_results:
             food_class = item.get("class")
-            conf = item.get("confidence", 0)
+            conf = float(item.get("confidence", 0))
+            if not food_class:
+                continue
+            found_any = True
             nutrition = get_nutrition_info(food_class, nutritional_data)
+            st.markdown(f"- **{food_class}** ({L['ai_confidence'].format(conf=conf*100)})")
+
             if nutrition is not None:
-                st.markdown(f"- **{food_class}** ({L['ai_confidence'].format(conf=conf*100)})")
                 st.markdown(f"  - ⚖️ {L['weight']}: {nutrition['weight']} g")
                 st.markdown(f"  - 🍔 Calories: {nutrition['calories']} kcal")
                 st.markdown(f"  - 🍗 Protein: {nutrition['protein']} g")
@@ -509,27 +520,33 @@ if image_data and profile:
                 total_calories += float(nutrition['calories'])
                 food_logged.append((food_class, float(nutrition['calories'])))
             else:
-                st.warning(L["no_nutrition"])
+                st.warning(f"{L['no_nutrition']} ({food_class})")
+
+        if not found_any:
+            st.error("The detection returned no classes. Try a clearer/closer photo.")
+
     else:
+        # Single object: pick the best between food vs fruit model
         st.markdown("🔁 **" + L["single_detected"] + "**")
         food_pred, conf_food = predict_food_api(image_bytes)
         fruit_pred, conf_fruit = predict_fruit_api(image_bytes)
 
         final_class = None
         final_conf = 0.0
-        if conf_fruit > conf_food and conf_fruit > 0.5:
+        if (conf_fruit or 0) > (conf_food or 0) and (conf_fruit or 0) > 0.5:
             st.info("🍏 The fruit model is more confident. Using fruit model prediction.")
             final_class, final_conf = fruit_pred, conf_fruit
         else:
             final_class, final_conf = food_pred, conf_food
 
         if not final_class:
-            st.error("Tidak mendapat prediksi dari API. Coba ulang atau cek koneksi.")
+            st.error("No prediction received from API. Please try again or check connectivity.")
         else:
-            nutrition = get_nutrition_info(final_class, nutritional_data)
             st.image(Image.open(BytesIO(image_bytes)), caption=L["ai_guess"].format(name=final_class), use_container_width=True)
             st.markdown(f"### {L['ai_guess'].format(name=final_class)}")
-            st.markdown(f"✅ {L['ai_confidence'].format(conf=final_conf*100)}")
+            st.markdown(f"✅ {L['ai_confidence'].format(conf=(final_conf or 0)*100)}")
+
+            nutrition = get_nutrition_info(final_class, nutritional_data)
             if nutrition is not None:
                 st.markdown(f"#### {L['nutrition_info']}")
                 st.markdown(f"- ⚖️ {L['weight']}: {nutrition['weight']} g")
@@ -545,6 +562,7 @@ if image_data and profile:
             else:
                 st.warning(L["no_nutrition"])
 
+    # Save scan results to logs (if any)
     for food, cal in food_logged:
         add_log(st.session_state.user_id, food, cal)
 
@@ -601,6 +619,8 @@ if profile:
             x='date:T', y='calories:Q'
         ).properties(title='Daily Calorie Trend (This Week)').interactive()
         st.sidebar.altair_chart(chart, use_container_width=True)
+
+    # Snack suggestion near the end of your budget
     nutritional_data = load_nutrition_data()
     if 'remaining' in locals() and remaining < 200 and remaining > 0 and nutritional_data is not None and not nutritional_data.empty:
         nutritional_data['calories'] = pd.to_numeric(nutritional_data['calories'], errors='coerce').fillna(0)
