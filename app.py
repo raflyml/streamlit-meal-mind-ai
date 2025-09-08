@@ -167,7 +167,8 @@ def get_all_logs(uid):
     if not df.empty: df["calories"]=pd.to_numeric(df["calories"],errors="coerce").fillna(0)
     return df
 def get_weekly_summary(uid):
-    conn=get_conn(); c=conn.cursor(); today=datetime.now(); last_week=(today-pd.Timedelta(days=6)).strftime("%Y-%m-%d"); today_str=today.strftime("%Y-%m-%d")
+    conn=get_conn(); c=conn.cursor()
+    today=datetime.now(); last_week=(today-pd.Timedelta(days=6)).strftime("%Y-%m-%d"); today_str=today.strftime("%Y-%m-%d")
     c.execute("SELECT date,SUM(calories) FROM logs WHERE user_id=? AND date BETWEEN ? AND ? GROUP BY date ORDER BY date ASC",(uid,last_week,today_str))
     df=pd.DataFrame(c.fetchall(),columns=["date","calories"]); conn.close()
     if not df.empty: df["calories"]=pd.to_numeric(df["calories"],errors="coerce").fillna(0)
@@ -194,7 +195,7 @@ def calculate_deficit_limit(tdee,goal):
     if goal=="Gain weight (surplus 300 kcal)": return tdee+300
     return tdee
 
-# ========= NUTRITION =========
+# ========= NUTRITION DATA =========
 @st.cache_data
 def load_nutrition_data():
     path=os.path.join(DATA_DIR,'nutrition_data.csv')
@@ -207,12 +208,41 @@ def load_nutrition_data():
         if col in df: df[col]=pd.to_numeric(df[col],errors='coerce').fillna(0)
     if 'food_name' in df: df['food_name']=df['food_name'].astype(str)
     return df
+
 def get_nutrition_info(name,data):
     if not name or data is None or data.empty: return None
     row=data[data['food_name'].str.lower()==str(name).lower()]
     return row.iloc[0] if not row.empty else None
 
-# ========= API =========
+# ---------- Pretty nutrition block with icons ----------
+def render_nutrition(nut: dict):
+    """Render a compact bullet list with icons (Weight, Calories, Protein, etc.)."""
+    st.markdown(
+        """
+        <style>
+        ul.ul-compact { margin: 0 0 0.5rem 0; padding-left: 1.2rem; }
+        ul.ul-compact li { margin: 0.15rem 0; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    items = [
+        ("⚖️", "Weight (g)", f"{nut.get('weight', 0)} g"),
+        ("🍔", "Calories", f"{nut.get('calories', 0)} kcal"),
+        ("🍗", "Protein", f"{nut.get('protein', 0)} g"),
+        ("🍞", "Carbs", f"{nut.get('carbohydrates', 0)} g"),
+        ("🧈", "Fat", f"{nut.get('fat', 0)} g"),
+        ("🌾", "Fiber", f"{nut.get('fiber', 0)} g"),
+        ("🍬", "Sugar", f"{nut.get('sugar', 0)} g"),
+        ("🧂", "Sodium", f"{nut.get('sodium', 0)} mg"),
+    ]
+    html = "<ul class='ul-compact'>"
+    for icon, label, value in items:
+        html += f"<li>{icon} <strong>{label}:</strong> {value}</li>"
+    html += "</ul>"
+    st.markdown(html, unsafe_allow_html=True)
+
+# ========= API CLIENT =========
 def _post_image(endpoint,bytes,timeout=120,retries=3):
     url=API_URL+endpoint; files={'file':('image.jpg',bytes,'image/jpeg')}
     last=None
@@ -228,7 +258,7 @@ def predict_food_api(b): d=_post_image("/predict/food",b); return (d.get("class"
 def predict_fruit_api(b): d=_post_image("/predict/fruit",b); return (d.get("class"),float(d.get("confidence",0))) if d else (None,0)
 def predict_yolo_api(b): d=_post_image("/predict/yolo",b); return d.get("results",[]) if d else []
 
-# ========= STREAMLIT =========
+# ========= APP =========
 st.set_page_config(page_title="MealMind AI", page_icon="🧠🍽️", layout="centered")
 st.title("🧠🍽️ MealMind AI")
 st.markdown(L["welcome"])
@@ -298,6 +328,7 @@ im=None
 method=st.radio(L["scan_image"],[L["upload_image"],L["camera"]],horizontal=True)
 if method==L["upload_image"]: f=st.file_uploader(L["upload_image"],type=["jpg","jpeg","png"]); im=f if f else None
 else: f=st.camera_input(L["camera"]); im=f if f else None
+
 if "pending_items" not in st.session_state: st.session_state.pending_items=[]
 if im:
     img=im.read(); st.image(Image.open(BytesIO(img)),caption=L["preview"],use_container_width=True)
@@ -321,18 +352,20 @@ if im:
                 ref=nut['weight'] if nut['weight']>0 else 100
                 st.session_state.pending_items=[{"name":name,"conf":conf,"grams":ref,"ref_weight":ref,"cal_ref":nut['calories'],"nutrition":nut.to_dict()}]
             else: st.error(L["nothing_detected"])
+
     if st.session_state.pending_items:
         st.markdown("### 🍽️ Detected Items")
         total=0
         for i,it in enumerate(st.session_state.pending_items):
             with st.container(border=True):
-                st.markdown(f"**{it['name']}** · {L['ai_confidence'].format(conf=it['conf']*100)}")
-                grams=st.number_input(L["adjust_portion"],10.0,1000.0,step=10.0,value=float(it["grams"]),key=f"g{i}")
+                c1, c2 = st.columns([2,1])
+                c1.markdown(f"**{it['name']}** · {L['ai_confidence'].format(conf=it['conf']*100)}")
+                grams=c2.number_input(L["adjust_portion"],10.0,1000.0,step=10.0,value=float(it["grams"]),key=f"g{i}")
                 it["grams"]=grams
                 ref=it["ref_weight"] if it["ref_weight"]>0 else 100
                 cal=(grams/ref)*it["cal_ref"]; total+=cal
-                nut=it["nutrition"]
-                st.markdown(f"- ⚖️ Reference: {nut['weight']} g\n- 🍔 Calories (ref): {nut['calories']} kcal\n- 🍗 Protein: {nut['protein']} g · 🍞 Carbs: {nut['carbohydrates']} g · 🧈 Fat: {nut['fat']} g")
+                c1.markdown(f"#### {L['nutrition_info']}")
+                render_nutrition(it["nutrition"])
         st.markdown(f"### 🧾 This scan: **{total:.0f} kcal**")
         if st.button(f"✅ {L['add_to_diary']}",use_container_width=True):
             for it in st.session_state.pending_items:
@@ -346,6 +379,8 @@ df=get_today_logs(st.session_state.user_id)
 if not df.empty:
     total=float(df["calories"].sum()); st.sidebar.dataframe(df.tail(10),use_container_width=True)
 else: total=0; st.sidebar.info("No foods logged yet today.")
+
+# ---- GOAL / PROGRESS ----
 if profile:
     limit=float(profile["daily_limit"]); remain=limit-total
     st.sidebar.progress(min(total/max(limit,1),1.0))
@@ -354,6 +389,7 @@ if profile:
     if total<limit-400: st.sidebar.warning(L["under_limit"])
     elif total>limit: st.sidebar.error(L["over_limit"])
     else: st.sidebar.success(L["on_track"])
+
     st.sidebar.markdown("---"); st.sidebar.markdown("### 📈 Weekly Summary")
     week=get_weekly_summary(st.session_state.user_id)
     if not week.empty:
@@ -362,18 +398,23 @@ if profile:
         if avg>0: st.sidebar.markdown(f"Est fat loss/week: {avg*7/7700:.2f} kg")
         chart=alt.Chart(week).mark_line(point=True).encode(x='date:T',y='calories:Q').properties(title="Daily Calorie Trend").interactive()
         st.sidebar.altair_chart(chart,use_container_width=True)
+
+    # snack quick add
     data=load_nutrition_data()
     if remain<200 and remain>0 and not data.empty:
         choices=data[(data['calories']<=remain)&(data['calories']>0)]
         if not choices.empty:
             snack=choices.sample(1).iloc[0]
-            if st.sidebar.button(f"Snack: {snack['food_name']} ({int(snack['calories'])} kcal)"): add_log(st.session_state.user_id,snack['food_name'],snack['calories']); st.sidebar.success("Added snack!")
+            if st.sidebar.button(f"Snack: {snack['food_name']} ({int(snack['calories'])} kcal)"):
+                add_log(st.session_state.user_id,snack['food_name'],snack['calories']); st.sidebar.success("Added snack!")
+
     if not df.empty:
         csv=df.to_csv(index=False).encode('utf-8'); st.sidebar.download_button("⬇️ Download Today",csv,"today.csv","text/csv")
     all_log=get_all_logs(st.session_state.user_id)
     if not all_log.empty:
         csv=all_log.to_csv(index=False).encode('utf-8'); st.sidebar.download_button("⬇️ Download All",csv,"all.csv","text/csv")
     st.sidebar.markdown("---"); st.sidebar.success(random.choice(L["motivation"]))
-else: st.sidebar.info("Complete your profile for full tracking.")
+else:
+    st.sidebar.info("Complete your profile for full tracking.")
 
 st.sidebar.markdown("---"); st.sidebar.caption("Made with 💪 and AI for smarter living.")
